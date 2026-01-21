@@ -394,9 +394,12 @@ def _make_eval_script_list(
     apply_test_patch_command = (
         f"git apply -v - <<'{delimiter}'\n{test_patch}\n{delimiter}"
     )
+    test_cmds = get_data_spec(instance["repo"], instance["version"])["test_cmd"]
+    if isinstance(test_cmds, str):
+        test_cmds = [test_cmds]
     test_command = " ".join(
         [
-            get_data_spec(instance["repo"], instance["version"])["test_cmd"],
+            *test_cmds,
             *get_test_directives(instance),
         ]
     )

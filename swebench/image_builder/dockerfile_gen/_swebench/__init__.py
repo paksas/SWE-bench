@@ -1,4 +1,3 @@
-import sqlite3
 import importlib.resources as resources
 import swebench.resources
 from functools import cache
@@ -299,19 +298,21 @@ def make_repo_script_list(specs, repo, base_commit) -> str:
 def load_cached_environment_yml(instance_id: str) -> str:
     """
     Load environment.yml from cache
+
+    Files are stored at: swebench-og/environments/{owner}/{instance_id}.yml
+    where owner is the first part of instance_id (e.g., "django" from "django__django-12345")
     """
-    conn = sqlite3.connect(
-        resources.files(swebench.resources) / "swebench-og" / "environments.yml.db"
+    owner = instance_id.split("__")[0]
+    env_path = (
+        resources.files(swebench.resources)
+        / "swebench-og"
+        / "environments"
+        / owner
+        / f"{instance_id}.yml"
     )
-    c = conn.cursor()
-    c.execute(
-        "SELECT environment_yml FROM environments WHERE instance_id = ?", (instance_id,)
-    )
-    result = c.fetchone()
-    conn.close()
-    if result:
-        return result[0]
-    else:
+    try:
+        return env_path.read_text()
+    except FileNotFoundError:
         return None
 
 

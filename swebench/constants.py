@@ -18,4 +18,5 @@ SWE_BENCH_MULTIMODAL_DATASETS = {
 
 SWE_BENCH_MULTILINGUAL_DATASETS = {
     "SWE-bench/SWE-bench_Multilingual",
+    "./sbm-dev",
 }

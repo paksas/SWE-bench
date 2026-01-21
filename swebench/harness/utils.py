@@ -376,8 +376,6 @@ def make_test_spec(
     fail_to_pass = _from_json_or_obj("FAIL_TO_PASS")
 
     env_name = "testbed"
-    repo_directory = f"/{env_name}"
-    specs = get_data_spec(repo, version)
 
     eval_script_list = get_eval_script_list(instance, dataset_name)
 
