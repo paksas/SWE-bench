@@ -2,11 +2,36 @@ import docker
 import resource
 
 from argparse import ArgumentParser
+from pathlib import Path
 
-from swebench.image_builder.image_spec import load_swebench_dataset_image_specs
+from swebench.image_builder.image_spec import get_image_specs_from_dataset
 from swebench.image_builder.docker_build import build_instance_images
 from swebench.image_builder.docker_utils import list_images
-from swebench.harness.utils import str2bool, optional_str
+from swebench.harness.utils import load_swebench_dataset, str2bool, optional_str
+
+INSTANCES_SUBDIR = Path("src") / "instances"
+
+
+def load_dockerfiles_from_dir(instances_dir: Path) -> dict[str, str]:
+    """
+    Load Dockerfiles from a pre-generated instances directory.
+
+    Expects structure: instances_dir/<instance_id>/Dockerfile
+
+    Args:
+        instances_dir: Path to directory containing instance subdirs with Dockerfiles.
+    Returns:
+        Dict mapping instance_id to Dockerfile content.
+    """
+    dockerfiles = {}
+    if not instances_dir.exists():
+        raise FileNotFoundError(f"Instances directory not found: {instances_dir}")
+    for instance_dir in instances_dir.iterdir():
+        if instance_dir.is_dir():
+            dockerfile_path = instance_dir / "Dockerfile"
+            if dockerfile_path.exists():
+                dockerfiles[instance_dir.name] = dockerfile_path.read_text()
+    return dockerfiles
 
 
 def filter_image_specs(
@@ -16,18 +41,11 @@ def filter_image_specs(
 ):
     """
     Filter the dataset to only include instances that need to be built.
-
-    Args:
-        dataset (list): List of instances (usually all of SWE-bench dev/test split) with image specs
-        client (docker.DockerClient): Docker client.
-        force_rebuild (bool): Whether to force rebuild all images.
     """
-    # Get existing images
     existing_images = list_images(client)
     data_to_build = []
 
     for spec in image_specs:
-        # Check if the instance needs to be built (based on force_rebuild flag and existing images)
         if force_rebuild:
             data_to_build.append(spec)
         elif spec.name not in existing_images:
@@ -46,24 +64,34 @@ def main(
     namespace,
     tag,
     dry_run,
+    dockerfile_repo,
 ):
     """
     Build Docker images for the specified instances.
 
     Args:
+        dataset_name (str): Name of the HuggingFace dataset.
+        split (str): Dataset split to use.
         instance_ids (list): List of instance IDs to build.
         max_workers (int): Number of workers for parallel processing.
         force_rebuild (bool): Whether to force rebuild all images.
         open_file_limit (int): Open file limit.
+        namespace (str): Docker registry namespace.
+        tag (str): Docker image tag.
         dry_run (bool): If True, create docker files and build contexts but don't build images.
+        dockerfile_repo (str): Path to the dockerfile repo root.
     """
     # Set open file limit
     resource.setrlimit(resource.RLIMIT_NOFILE, (open_file_limit, open_file_limit))
     client = docker.from_env()
 
-    image_specs = load_swebench_dataset_image_specs(
-        dataset_name, split, namespace, tag, instance_ids
-    )
+    # Load pre-generated dockerfiles
+    instances_dir = Path(dockerfile_repo) / INSTANCES_SUBDIR
+    dockerfiles = load_dockerfiles_from_dir(instances_dir)
+
+    # Load dataset and create image specs
+    dataset = load_swebench_dataset(dataset_name, split, instance_ids=instance_ids)
+    image_specs = get_image_specs_from_dataset(dataset, dockerfiles, namespace, tag)
     image_specs = filter_image_specs(image_specs, client, force_rebuild)
 
     if len(image_specs) == 0:
@@ -131,6 +159,12 @@ if __name__ == "__main__":
         type=str2bool,
         default=False,
         help="Create docker files and build contexts but don't build images",
+    )
+    parser.add_argument(
+        "--dockerfile_repo",
+        type=str,
+        required=True,
+        help="Path to the dockerfile repo root (expects src/instances/<instance_id>/Dockerfile)",
     )
     args = parser.parse_args()
     main(**vars(args))

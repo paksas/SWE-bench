@@ -3,7 +3,6 @@ from typing import Any
 from swebench.harness.constants import (
     APPLY_PATCH_FAIL,
     END_TEST_OUTPUT,
-    FAIL_ONLY_REPOS,
     FAIL_TO_FAIL,
     FAIL_TO_PASS,
     PASS_TO_FAIL,
@@ -17,8 +16,7 @@ from swebench.harness.constants import (
     TestStatus,
 )
 from swebench.types import TestSpec
-from swebench.harness.log_parsers import MAP_REPO_TO_PARSER
-from swebench.data_specs import get_data_spec
+from swebench.harness.log_parsers import PARSER_REGISTRY
 
 
 # MARK: Utility functions
@@ -46,12 +44,7 @@ def get_logs_eval(test_spec: TestSpec, log_fp: str) -> tuple[dict[str, str], boo
 
     TODO(john-b-yang): Check this is working properly...
     """
-    repo = test_spec.repo
-    version = test_spec.version
-    log_parser = MAP_REPO_TO_PARSER[repo]
-    test_cmd = get_data_spec(repo, version)["test_cmd"]
-    if isinstance(test_cmd, list):
-        test_cmd = test_cmd[-1]
+    log_parser = PARSER_REGISTRY[test_spec.log_parser]
 
     with open(log_fp) as f:
         content = f.read()
@@ -266,11 +259,7 @@ def get_eval_report(
         PASS_TO_PASS: test_spec.PASS_TO_PASS,
     }
 
-    eval_type = (
-        EvalType.FAIL_ONLY
-        if test_spec.repo in FAIL_ONLY_REPOS
-        else EvalType.PASS_AND_FAIL
-    )
+    eval_type = EvalType(test_spec.eval_type)
 
     report = get_eval_tests_report(eval_status_map, eval_ref, eval_type=eval_type)
     if get_resolution_status(report) == ResolvedStatus.FULL.value:

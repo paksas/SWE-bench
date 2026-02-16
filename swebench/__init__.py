@@ -1,4 +1,4 @@
-__version__ = "4.0.4"
+__version__ = "5.0.0rc"
 
 from swebench.collect.build_dataset import main as build_dataset
 from swebench.collect.get_tasks_pipeline import main as get_tasks_pipeline
@@ -29,7 +29,7 @@ from swebench.harness.grading import (
 )
 
 from swebench.harness.log_parsers import (
-    MAP_REPO_TO_PARSER,
+    PARSER_REGISTRY,
 )
 
 from swebench.harness.run_evaluation import (

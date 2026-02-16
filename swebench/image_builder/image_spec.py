@@ -4,8 +4,6 @@ from typing import Optional, Union, cast
 from swebench.types import (
     SWEbenchInstance,
 )
-from swebench.image_builder.dockerfile_gen import get_dockerfile
-from swebench.harness.utils import load_swebench_dataset
 
 
 @dataclass
@@ -64,58 +62,49 @@ class ImageSpec:
 
 def get_image_specs_from_dataset(
     dataset: Union[list[SWEbenchInstance], list[ImageSpec]],
-    dataset_name: str,
+    dockerfiles: dict[str, str],
     namespace: Optional[str] = None,
     tag: str = "latest",
 ) -> list[ImageSpec]:
     """
     Idempotent function that converts a list of SWEbenchInstance objects to a list of ImageSpec objects.
+
+    Args:
+        dataset: List of SWEbenchInstance objects or ImageSpec objects.
+        dockerfiles: Dict mapping instance_id to Dockerfile content.
+        namespace: Docker registry namespace.
+        tag: Docker image tag.
     """
     if isinstance(dataset[0], ImageSpec):
         return cast(list[ImageSpec], dataset)
-    return list(
-        map(
-            lambda x: make_image_spec(x, dataset_name, namespace, tag),
-            cast(list[SWEbenchInstance], dataset),
-        )
-    )
+    return [
+        make_image_spec(x, dockerfiles[x["instance_id"]], namespace, tag)
+        for x in cast(list[SWEbenchInstance], dataset)
+    ]
 
 
 def make_image_spec(
     instance: SWEbenchInstance,
-    dataset_name: str,
+    dockerfile: str,
     namespace: Optional[str] = None,
     tag: str = "latest",
 ) -> ImageSpec:
     """
     Create an ImageSpec from a SWEbenchInstance for image building purposes.
+
+    Args:
+        instance: SWEbenchInstance dict.
+        dockerfile: Dockerfile content string (pre-generated).
+        namespace: Docker registry namespace.
+        tag: Docker image tag.
     """
     if isinstance(instance, ImageSpec):
         return instance
     assert tag is not None, "tag cannot be None"
 
-    instance_id = instance["instance_id"]
-    dockerfile = get_dockerfile(instance, dataset_name)
-
     return ImageSpec(
-        instance_id=instance_id,
+        instance_id=instance["instance_id"],
         dockerfile=dockerfile,
         namespace=namespace,
         tag=tag,
     )
-
-
-def load_swebench_dataset_image_specs(
-    dataset_name="SWE-bench/SWE-bench",
-    split="test",
-    namespace: Optional[str] = None,
-    tag: str = "latest",
-    instance_ids=None,
-) -> list[ImageSpec]:
-    """
-    Load a list of ImageSpec objects from a SWE-bench dataset.
-    """
-    dataset = load_swebench_dataset(dataset_name, split, instance_ids=instance_ids)
-    return [
-        make_image_spec(instance, dataset_name, namespace, tag) for instance in dataset
-    ]

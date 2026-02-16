@@ -42,6 +42,7 @@ from swebench.harness.utils import (
     run_threadpool,
     str2bool,
 )
+
 from swebench.logger import setup_logger, close_logger
 
 GIT_APPLY_CMDS = [
@@ -49,21 +50,6 @@ GIT_APPLY_CMDS = [
     "git apply --verbose --reject",
     "patch --batch --fuzz=5 -p1 -i",
 ]
-
-
-class EvaluationError(Exception):
-    def __init__(self, instance_id, message, logger):
-        super().__init__(message)
-        self.super_str = super().__str__()
-        self.instance_id = instance_id
-        self.log_path = logger.log_file
-        self.logger = logger
-
-    def __str__(self):
-        return (
-            f"Error in evaluation for {self.instance_id}: {self.super_str}\n"
-            f"Check ({self.log_path}) for more information."
-        )
 
 
 def create_container(
@@ -306,12 +292,7 @@ def run_instances(
         rewrite_reports (bool): True if eval run is just to reformat existing report
     """
     client = docker.from_env()
-    test_specs = list(
-        map(
-            lambda instance: make_test_spec(instance),
-            instances,
-        )
-    )
+    test_specs = [make_test_spec(instance) for instance in instances]
 
     # run instances in parallel
     payloads = []

@@ -8,7 +8,6 @@ from swebench.harness.constants import (
     LOG_REPORT,
 )
 from swebench.image_builder.docker_utils import list_images
-from swebench.harness.utils import make_test_spec
 
 
 def make_run_report(
@@ -75,9 +74,8 @@ def make_run_report(
     if client:
         # get remaining images and containers
         images = list_images(client)
-        test_specs = list(map(make_test_spec, full_dataset))
-        for spec in test_specs:
-            image_name = spec.image
+        for instance in full_dataset:
+            image_name = instance.get("image", "")
             if image_name in images:
                 unremoved_images.add(image_name)
         containers = client.containers.list(all=True)
@@ -117,7 +115,7 @@ def make_run_report(
         "error_ids": list(sorted(error_ids)),
         "schema_version": 2,
     }
-    if not client:
+    if client:
         report.update(
             {
                 "unstopped_instances": len(unstopped_containers),

@@ -161,6 +161,9 @@ class ModalSandboxRuntime:
 
     @staticmethod
     def get_instance_image(test_spec: TestSpec) -> modal.Image:
+        # TODO: setup_env_script and install_repo_script are not part of the
+        # current TestSpec dataclass.  This method needs to be updated to work
+        # with pre-built images or to source these scripts from elsewhere.
         env_script = test_spec.setup_env_script
         # add trusted host flag for Modal's PyPI mirror
         env_script = env_script.replace(
@@ -410,7 +413,7 @@ def run_instances_modal(
         run_id (str): Run ID
         timeout (int): Timeout for running tests
     """
-    test_specs = list(map(make_test_spec, instances))
+    test_specs = [make_test_spec(inst) for inst in instances]
 
     with modal.enable_output():
         with app.run():

@@ -1,6 +1,4 @@
 import json
-import re
-import requests
 import traceback
 
 from argparse import ArgumentTypeError
@@ -9,35 +7,25 @@ from datasets import Dataset, load_dataset, load_from_disk
 from dotenv import load_dotenv
 from pathlib import Path
 from tqdm import tqdm
-from typing import cast, Union
+from typing import cast
 from swebench.types import SWEbenchInstance, TestSpec
 
 
 load_dotenv()
 
 
-# Import here to avoid circular import
-def get_eval_script_list(instance: SWEbenchInstance, dataset_name: str) -> list[str]:
-    from swebench.harness.eval_script_gen import (
-        get_eval_script_list as _get_eval_script_list,
-    )
-
-    return _get_eval_script_list(instance, dataset_name)
-
-
 class EvaluationError(Exception):
     def __init__(self, instance_id, message, logger):
         super().__init__(message)
+        self.super_str = super().__str__()
         self.instance_id = instance_id
-        self.log_file = logger.log_file
+        self.log_path = logger.log_file
         self.logger = logger
 
     def __str__(self):
-        log_msg = traceback.format_exc()
-        self.logger.info(log_msg)
         return (
-            f"{self.instance_id}: {super().__str__()}\n"
-            f"Check ({self.log_file}) for more information."
+            f"Error in evaluation for {self.instance_id}: {self.super_str}\n"
+            f"Check ({self.log_path}) for more information."
         )
 
 
@@ -134,11 +122,13 @@ def load_swebench_dataset(
     # check that all instance IDs are in the dataset
     if instance_ids:
         instance_ids = set(instance_ids)
-    # Load from local .json/.jsonl file
+    # Load from local file
     if name.endswith(".json"):
         dataset = json.loads(Path(name).read_text())
     elif name.endswith(".jsonl"):
         dataset = [json.loads(line) for line in Path(name).read_text().splitlines()]
+    elif name.endswith(".parquet"):
+        dataset = cast(Dataset, load_dataset("parquet", data_files=name, split="train"))
     else:
         # Load from Hugging Face Datasets
         if name.lower() in {"swe-bench", "swebench", "swe_bench"}:
@@ -151,7 +141,10 @@ def load_swebench_dataset(
             "lite",
         }:
             name = "SWE-bench/SWE-bench_Lite"
-        if (Path(name) / split / "dataset_info.json").exists():
+        parquet_path = Path(name) / f"{split}.parquet"
+        if parquet_path.exists():
+            dataset = cast(Dataset, load_dataset("parquet", data_files=str(parquet_path), split="train"))
+        elif (Path(name) / split / "dataset_info.json").exists():
             dataset = cast(Dataset, load_from_disk(Path(name) / split))
         else:
             dataset = cast(Dataset, load_dataset(name, split=split))
@@ -168,126 +161,6 @@ def load_swebench_dataset(
             instance for instance in dataset if instance["instance_id"] in instance_ids
         ]
     return [cast(SWEbenchInstance, instance) for instance in dataset]
-
-
-### MARK - Patch Correction
-PATCH_PATTERN = re.compile(
-    r"(?:diff[\w\_\.\ \/\-]+\n)?\-\-\-\s+a\/(?:.*?)\n\+\+\+\s+b\/(?:.*?)(?=diff\ |\-\-\-\ a\/|\Z)",
-    re.DOTALL,
-)
-PATCH_FILE_PATTERN = re.compile(r"\-\-\-\s+a\/(?:.+)\n\+\+\+\s+b\/(?:.+)")
-PATCH_HUNK_PATTERN = re.compile(
-    r"\@\@\s+\-(\d+),(\d+)\s+\+(\d+),(\d+)\s+\@\@(.+?)(?=diff\ |\-\-\-\ a\/|\@\@\ \-|\Z)",
-    re.DOTALL,
-)
-
-
-def get_first_idx(charlist):
-    """Get index of first occurrence of "-" or "+" in charlist"""
-    first_min = charlist.index("-") if "-" in charlist else len(charlist)
-    first_plus = charlist.index("+") if "+" in charlist else len(charlist)
-    return min(first_min, first_plus)
-
-
-def get_last_idx(charlist):
-    """Get index of last occurrence of "-" or "+" in charlist"""
-    char_idx = get_first_idx(charlist[::-1])
-    last_idx = len(charlist) - char_idx
-    return last_idx + 1
-
-
-def strip_content(hunk):
-    """Remove trailing non +/- lines and trailing whitespace per line per hunk"""
-    first_chars = list(map(lambda x: None if not len(x) else x[0], hunk.split("\n")))
-    first_idx = get_first_idx(first_chars)
-    last_idx = get_last_idx(first_chars)
-    new_lines = list(map(lambda x: x.rstrip(), hunk.split("\n")[first_idx:last_idx]))
-    # should leave one space for empty context lines
-    new_lines = [line if line.strip() else " " for line in new_lines]
-    new_hunk = "\n" + "\n".join(new_lines) + "\n"
-    return new_hunk, first_idx - 1
-
-
-def get_hunk_stats(pre_start, pre_len, post_start, post_len, hunk, total_delta):
-    """Recalculate hunk start/end position and diff delta"""
-    stats = {"context": 0, "added": 0, "subtracted": 0}
-    hunk = hunk.split("\n", 1)[-1].strip("\n")
-    for line in hunk.split("\n"):
-        if line.startswith("-"):
-            stats["subtracted"] += 1
-        elif line.startswith("+"):
-            stats["added"] += 1
-        else:
-            stats["context"] += 1
-    context = stats["context"]
-    added = stats["added"]
-    subtracted = stats["subtracted"]
-    pre_len = context + subtracted
-    post_start = pre_start + total_delta
-    post_len = context + added
-    total_delta = total_delta + (post_len - pre_len)
-    return pre_start, pre_len, post_start, post_len, total_delta
-
-
-def extract_minimal_patch(model_patch):
-    """
-    Wrapper function that takes hunk and
-    * Removes trailing non +/- lines and trailing whitespace per line per hunk
-    * Recalculates hunk start/end position and diff delta
-    * Returns new patch
-    """
-    model_patch = model_patch.lstrip("\n")
-    new_patch = ""
-    for patch in PATCH_PATTERN.findall(model_patch):
-        total_delta = 0
-        patch_header = PATCH_FILE_PATTERN.findall(patch)[0]
-        if patch_header:
-            new_patch += patch_header + "\n"
-        for hunk in PATCH_HUNK_PATTERN.findall(patch):
-            pre_start, pre_len, post_start, post_len, content = hunk
-            pre_start, pre_len, post_start, post_len, content = list(
-                map(lambda x: int(x) if x.isnumeric() else x, hunk)
-            )
-            content, adjust_pre_start = strip_content(content)
-            pre_start += adjust_pre_start
-            pre_start, pre_len, post_start, post_len, total_delta = get_hunk_stats(
-                pre_start, pre_len, post_start, post_len, content, total_delta
-            )
-            new_patch += (
-                f"@@ -{pre_start},{pre_len} +{post_start},{post_len} @@{content}"
-            )
-    return new_patch
-
-
-def has_attribute_or_import_error(log_before):
-    """
-    Check to see if Attribute/Import-prefix is in log text
-
-    Args:
-        log_before (str): Validation log text before patch application
-    """
-    log_before = log_before.lower()
-
-    if any([x in log_before for x in ["attribute", "import"]]):
-
-        def get_lines_with_word(text, target_word):
-            # Function to extract line(s) that contains target_word
-            text, target_word = text.lower(), target_word.lower()
-            lines, hits = text.split("\n")[::-1], []
-            for line in lines:
-                if target_word in line:
-                    hits.append(line)
-            return hits
-
-        # Get line with Attribute/Import error
-        lines_1 = get_lines_with_word(log_before, "attribute")
-        lines_2 = get_lines_with_word(log_before, "import")
-        lines_1 = " ".join(lines_1)
-        lines_2 = " ".join(lines_2)
-
-        if any([(x in lines_1 or x in lines_2) for x in ["error", "fail"]]):
-            return True
-    return False
 
 
 def str2bool(v):
@@ -313,78 +186,32 @@ def optional_str(value: str) -> str | None:
     return value
 
 
-def get_repo_file(repo, commit, filepath):
-    url = f"https://raw.githubusercontent.com/{repo}/{commit}/{filepath}"
-    try:
-        response = requests.get(url)
-        if response.status_code == 200:
-            return response.text
-        return None
-    except:
-        return None
+def parse_eval_script(eval_script: str) -> list[str]:
+    """Parse an eval.sh script into a command list (strip shebang + set flags)."""
+    return [
+        line
+        for line in eval_script.strip().split("\n")
+        if line not in ("#!/bin/bash", "set -uxo pipefail")
+    ]
 
 
-def get_test_specs_from_dataset(
-    dataset: Union[list[SWEbenchInstance], list[TestSpec]],
-) -> list[TestSpec]:
+def make_test_spec(instance: dict) -> TestSpec:
     """
-    Idempotent function that converts a list of SWEbenchInstance objects to a list of TestSpec objects.
+    Build a TestSpec from a dataset instance.
+
+    The instance dict must contain: instance_id, image, repo, version,
+    FAIL_TO_PASS, PASS_TO_PASS, log_parser, eval_type, eval_script.
     """
-    if isinstance(dataset[0], TestSpec):
-        return cast(list[TestSpec], dataset)
-    return list(
-        map(
-            lambda x: make_test_spec(
-                x, dataset_name="SWE-bench/SWE-bench_Verified"
-            ),  # Default for backward compatibility
-            cast(list[SWEbenchInstance], dataset),
-        )
-    )
-
-
-def make_test_spec(
-    instance: SWEbenchInstance,
-    dataset_name: str = "SWE-bench/SWE-bench_Verified",  # Default for backward compatibility
-) -> TestSpec:
-    """
-    Create a TestSpec from a SWEbenchInstance for evaluation purposes.
-    Expects the instance to have an 'image' field pointing to a pre-built Docker image.
-    """
-    if isinstance(instance, TestSpec):
-        return instance
-
-    instance_id = instance["instance_id"]
-    repo = instance["repo"]
-    version = instance.get("version")
-    base_commit = instance["base_commit"]
-    test_patch = instance["test_patch"]
-
-    if "image" not in instance:
-        raise ValueError(f"Instance {instance_id} missing required 'image' field")
-    image = instance["image"]
-
-    def _from_json_or_obj(key: str) -> Union[dict, list]:
-        """If key points to string, load with json"""
-        if key not in instance:
-            # If P2P, F2P keys not found, it's a validation instance
-            return []
-        if isinstance(instance[key], str):
-            return json.loads(instance[key])
-        return instance[key]
-
-    pass_to_pass = _from_json_or_obj("PASS_TO_PASS")
-    fail_to_pass = _from_json_or_obj("FAIL_TO_PASS")
-
-    env_name = "testbed"
-
-    eval_script_list = get_eval_script_list(instance, dataset_name)
-
+    f2p = instance["FAIL_TO_PASS"]
+    p2p = instance["PASS_TO_PASS"]
     return TestSpec(
-        instance_id=instance_id,
-        image=image,
-        eval_script_list=eval_script_list,
-        repo=repo,
-        version=version,
-        FAIL_TO_PASS=fail_to_pass,
-        PASS_TO_PASS=pass_to_pass,
+        instance_id=instance["instance_id"],
+        image=instance["image"],
+        eval_script_list=parse_eval_script(instance["eval_script"]),
+        repo=instance["repo"],
+        version=instance["version"],
+        FAIL_TO_PASS=json.loads(f2p) if isinstance(f2p, str) else f2p,
+        PASS_TO_PASS=json.loads(p2p) if isinstance(p2p, str) else p2p,
+        log_parser=instance["log_parser"],
+        eval_type=instance["eval_type"],
     )
