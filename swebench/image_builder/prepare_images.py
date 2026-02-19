@@ -1,7 +1,11 @@
 import docker
+import re
 import resource
+import subprocess
+import tempfile
 
 from argparse import ArgumentParser
+from contextlib import contextmanager
 from pathlib import Path
 
 from swebench.image_builder.image_spec import get_image_specs_from_dataset
@@ -9,29 +13,91 @@ from swebench.image_builder.docker_build import build_instance_images
 from swebench.image_builder.docker_utils import list_images
 from swebench.harness.utils import load_swebench_dataset, str2bool, optional_str
 
-INSTANCES_SUBDIR = Path("src") / "instances"
+DOCKERFILES_SUBDIR = Path("src") / "dockerfiles"
 
 
-def load_dockerfiles_from_dir(instances_dir: Path) -> dict[str, str]:
+def load_dockerfiles_from_dir(dockerfiles_dir: Path) -> dict[str, str]:
     """
-    Load Dockerfiles from a pre-generated instances directory.
+    Load Dockerfiles from a flat directory.
 
-    Expects structure: instances_dir/<instance_id>/Dockerfile
+    Expects structure: dockerfiles_dir/<instance_id>.Dockerfile
 
     Args:
-        instances_dir: Path to directory containing instance subdirs with Dockerfiles.
+        dockerfiles_dir: Path to directory containing <instance_id>.Dockerfile files.
     Returns:
         Dict mapping instance_id to Dockerfile content.
     """
     dockerfiles = {}
-    if not instances_dir.exists():
-        raise FileNotFoundError(f"Instances directory not found: {instances_dir}")
-    for instance_dir in instances_dir.iterdir():
-        if instance_dir.is_dir():
-            dockerfile_path = instance_dir / "Dockerfile"
-            if dockerfile_path.exists():
-                dockerfiles[instance_dir.name] = dockerfile_path.read_text()
+    if not dockerfiles_dir.exists():
+        raise FileNotFoundError(f"Dockerfiles directory not found: {dockerfiles_dir}")
+    for dockerfile_path in dockerfiles_dir.glob("*.Dockerfile"):
+        instance_id = dockerfile_path.name.removesuffix(".Dockerfile")
+        dockerfiles[instance_id] = dockerfile_path.read_text()
     return dockerfiles
+
+
+def _is_github_ref(dockerfile_repo: str) -> bool:
+    """Check if the dockerfile_repo is a GitHub reference (not a local path)."""
+    if re.match(r"^https?://github\.com/", dockerfile_repo):
+        return True
+    if re.match(r"^[\w.-]+/[\w.-]+$", dockerfile_repo) and not Path(dockerfile_repo).is_dir():
+        return True
+    return False
+
+
+def _github_ref_to_urls(dockerfile_repo: str) -> list[str]:
+    """Convert a GitHub reference to clone URLs (SSH first, then HTTPS fallback)."""
+    if re.match(r"^https?://github\.com/", dockerfile_repo):
+        # Extract owner/repo from URL
+        match = re.match(r"^https?://github\.com/([\w.-]+/[\w.-]+?)(?:\.git)?/?$", dockerfile_repo)
+        if not match:
+            return [dockerfile_repo.rstrip("/") + ".git"]
+        owner_repo = match.group(1)
+    else:
+        owner_repo = dockerfile_repo
+    return [
+        f"git@github.com:{owner_repo}.git",
+        f"https://github.com/{owner_repo}.git",
+    ]
+
+
+@contextmanager
+def resolve_dockerfile_repo(dockerfile_repo: str):
+    """
+    Resolve a dockerfile repo reference to a local path.
+
+    Accepts:
+        - A local directory path (used directly)
+        - A GitHub repo in "owner/repo" format
+        - A GitHub URL like "https://github.com/owner/repo"
+
+    Yields the local Path to the repo root.
+    """
+    if not _is_github_ref(dockerfile_repo):
+        repo_path = Path(dockerfile_repo)
+        if not repo_path.is_dir():
+            raise FileNotFoundError(f"Local dockerfile repo not found: {dockerfile_repo}")
+        yield repo_path
+        return
+
+    clone_urls = _github_ref_to_urls(dockerfile_repo)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        for i, clone_url in enumerate(clone_urls):
+            print(f"Cloning dockerfile repo from {clone_url}...")
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", clone_url, tmpdir],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                break
+            if i < len(clone_urls) - 1:
+                print(f"Clone failed, trying next URL...")
+            else:
+                raise RuntimeError(
+                    f"Failed to clone dockerfile repo. Last error:\n{result.stderr}"
+                )
+        yield Path(tmpdir)
 
 
 def filter_image_specs(
@@ -79,15 +145,16 @@ def main(
         namespace (str): Docker registry namespace.
         tag (str): Docker image tag.
         dry_run (bool): If True, create docker files and build contexts but don't build images.
-        dockerfile_repo (str): Path to the dockerfile repo root.
+        dockerfile_repo (str): Dockerfile repo reference — a local path, GitHub "owner/repo", or GitHub URL.
     """
     # Set open file limit
     resource.setrlimit(resource.RLIMIT_NOFILE, (open_file_limit, open_file_limit))
     client = docker.from_env()
 
     # Load pre-generated dockerfiles
-    instances_dir = Path(dockerfile_repo) / INSTANCES_SUBDIR
-    dockerfiles = load_dockerfiles_from_dir(instances_dir)
+    with resolve_dockerfile_repo(dockerfile_repo) as repo_path:
+        dockerfiles_dir = repo_path / DOCKERFILES_SUBDIR
+        dockerfiles = load_dockerfiles_from_dir(dockerfiles_dir)
 
     # Load dataset and create image specs
     dataset = load_swebench_dataset(dataset_name, split, instance_ids=instance_ids)
@@ -164,7 +231,7 @@ if __name__ == "__main__":
         "--dockerfile_repo",
         type=str,
         required=True,
-        help="Path to the dockerfile repo root (expects src/instances/<instance_id>/Dockerfile)",
+        help="Dockerfile repo: local path, GitHub 'owner/repo', or 'https://github.com/owner/repo'",
     )
     args = parser.parse_args()
     main(**vars(args))

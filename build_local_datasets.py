@@ -164,8 +164,7 @@ FAIL_ONLY_REPOS_MULTIMODAL = {
 
 
 def get_image_name(instance_id: str) -> str:
-    image_id = instance_id.replace("__", "_1776_").lower()
-    return f"swebench/sweb.eval.x86_64.{image_id}:latest"
+    return f"amd64.{instance_id}:latest".lower()
 
 
 # ---------------------------------------------------------------------------
