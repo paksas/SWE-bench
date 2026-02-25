@@ -75,6 +75,7 @@ def custom_api_inference(
     test_dataset,
     api_url: str,
     skills_dir: str | None,
+    model_name: str,
     output_file: Path,
     existing_ids: set,
     timeout: int,
@@ -109,6 +110,7 @@ def custom_api_inference(
 
             output_dict = {
                 "instance_id": instance_id,
+                "model_name_or_path": model_name,
                 "full_output": response_text,
                 "model_patch": extract_diff(response_text),
             }
@@ -121,26 +123,12 @@ def main(
     api_url: str,
     skills_dir: str | None,
     model_name: str,
-    shard_id: int | None,
-    num_shards: int | None,
-    output_dir: str,
+    predictions_path: str,
     timeout: int,
     retries: int,
 ):
-    if shard_id is None and num_shards is not None:
-        logger.warning(
-            "Received num_shards=%d but shard_id is None, ignoring", num_shards
-        )
-    if shard_id is not None and num_shards is None:
-        logger.warning(
-            "Received shard_id=%d but num_shards is None, ignoring", shard_id
-        )
-
-    # Build output path
-    output_file_str = f"{model_name}__{dataset_name_or_path.split('/')[-1]}__{split}"
-    if shard_id is not None and num_shards is not None:
-        output_file_str += f"__shard-{shard_id}__num_shards-{num_shards}"
-    output_file = Path(output_dir) / (output_file_str + ".jsonl")
+    output_file = Path(predictions_path)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
     logger.info("Will write to %s", str(output_file))
 
     # Collect already-processed ids for resumability
@@ -177,14 +165,11 @@ def main(
             load_from_cache_file=False,
         )
 
-    # Shard if requested
-    if shard_id is not None and num_shards is not None:
-        dataset = dataset.shard(num_shards, shard_id, contiguous=True)
-
     custom_api_inference(
         test_dataset=dataset,
         api_url=api_url,
         skills_dir=skills_dir,
+        model_name=model_name,
         output_file=output_file,
         existing_ids=existing_ids,
         timeout=timeout,
@@ -223,25 +208,13 @@ if __name__ == "__main__":
         "--model_name",
         type=str,
         default="custom_api",
-        help="Label used in output file naming and JSONL records",
+        help="Value written as model_name_or_path in each prediction record",
     )
     parser.add_argument(
-        "--shard_id",
-        type=int,
-        default=None,
-        help="Shard id to process. If None, process all shards.",
-    )
-    parser.add_argument(
-        "--num_shards",
-        type=int,
-        default=None,
-        help="Number of shards. If None, process all shards.",
-    )
-    parser.add_argument(
-        "--output_dir",
+        "--predictions_path",
         type=str,
         required=True,
-        help="Path to the output directory.",
+        help="Path to the output JSONL file (e.g. ./outputs/predictions.jsonl)",
     )
     parser.add_argument(
         "--timeout",
