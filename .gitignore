@@ -172,3 +172,4 @@ notebooks/
 *logs/
 output-*/
 datasets/
+*-eval.json
